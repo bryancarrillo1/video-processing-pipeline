@@ -13,7 +13,7 @@ export async function setup(): Promise<void> {
   Object.assign(process.env, TEST_ENV);
   const core = await import("@vpp/core");
   await core.migrate();
-  await core.ensureBucket();
+  await core.ensureBuckets();
   await core.purgeQueue("jobs");
   await core.purgeQueue("dead-letter");
   // Leftover unsent outbox rows from earlier runs would otherwise be dispatched now.

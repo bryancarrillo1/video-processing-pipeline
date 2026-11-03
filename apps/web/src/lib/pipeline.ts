@@ -1,6 +1,6 @@
 // Pure view-model helpers for the pipeline UI. No React, no I/O, so they're
 // unit tested directly (apps/web/test/pipeline.test.ts).
-import { TARGET_HEIGHTS, type JobEventView, type JobView, type VideoStatus } from "@vpp/core/domain";
+import { TARGET_HEIGHTS, type JobEventView, type JobView, type SourceInfo, type VideoStatus } from "@vpp/core/domain";
 
 // ---------------------------------------------------------------------------
 // Lanes: one row per job in the pipeline view
@@ -9,7 +9,9 @@ import { TARGET_HEIGHTS, type JobEventView, type JobView, type VideoStatus } fro
 export type Lane =
   | { kind: "job"; key: string; label: string; job: JobView }
   // A transcode that doesn't exist yet because the probe hasn't fanned out.
-  | { kind: "placeholder"; key: string; label: string };
+  | { kind: "placeholder"; key: string; label: string }
+  // A transcode the probe decided not to create (no upscaling), or couldn't.
+  | { kind: "skipped"; key: string; label: string; reason: string };
 
 export function jobLabel(job: Pick<JobView, "kind" | "targetHeight">): string {
   return job.kind === "probe" ? "Probe" : `Transcode ${job.targetHeight}p`;
@@ -18,8 +20,11 @@ export function jobLabel(job: Pick<JobView, "kind" | "targetHeight">): string {
 /**
  * Probe first, then one lane per target height. Heights without a job yet
  * show as placeholders so the layout doesn't jump when the fan-out happens.
+ * Once the probe has finished, a missing height was skipped on purpose: the
+ * fan-out commits in the same transaction as the probe's completion, so there
+ * is no in-between state where it's still coming.
  */
-export function buildLanes(jobs: JobView[]): Lane[] {
+export function buildLanes(jobs: JobView[], source: Pick<SourceInfo, "width" | "height"> | null = null): Lane[] {
   const probe = jobs.find((j) => j.kind === "probe");
   const lanes: Lane[] = [
     probe
@@ -30,12 +35,21 @@ export function buildLanes(jobs: JobView[]): Lane[] {
     ...TARGET_HEIGHTS,
     ...jobs.filter((j) => j.kind === "transcode").map((j) => j.targetHeight),
   ]);
+  const skipReason =
+    probe?.state === "failed"
+      ? "probe failed: nothing to transcode"
+      : source
+        ? `source is ${Math.min(source.width, source.height)}p: no upscaling`
+        : "not needed for this source";
   for (const height of [...heights].sort((a, b) => a - b)) {
     const job = jobs.find((j) => j.kind === "transcode" && j.targetHeight === height);
+    const label = `Transcode ${height}p`;
     lanes.push(
       job
         ? { kind: "job", key: job.jobId, label: jobLabel(job), job }
-        : { kind: "placeholder", key: `t${height}`, label: `Transcode ${height}p` },
+        : probe?.state === "completed" || probe?.state === "failed"
+          ? { kind: "skipped", key: `t${height}`, label, reason: skipReason }
+          : { kind: "placeholder", key: `t${height}`, label },
     );
   }
   return lanes;
@@ -112,6 +126,22 @@ export function describeEvent(e: JobEventView, labelFor: (jobId: string) => stri
         ? { title: `${job} claimed (attempt ${e.attempt})`, tone: "info" }
         : { title: `${job} claimed`, tone: "info" };
     case "completed":
+      // Older (pre-M5) events carry no detail; they just say "completed".
+      if (typeof d.durationS === "number" && Array.isArray(d.renditions)) {
+        const heights = (d.renditions as number[]).map((h) => `${h}p`).join(", ");
+        return {
+          title: `${job} completed: ${String(d.width)}×${String(d.height)}, ${formatDuration(d.durationS * 1000)}`,
+          tone: "success",
+          note: `${String(d.videoCodec)} at ${String(d.frameRate)} fps${d.hasAudio ? " with audio" : ", no audio"}. Fanning out: ${heights}.`,
+        };
+      }
+      if (typeof d.bandwidth === "number") {
+        return {
+          title: `${job} completed and published`,
+          tone: "success",
+          note: `Verified before publishing: ${String(d.segmentCount)} segments at ${String(d.width)}×${String(d.height)}, peak ${formatBitrate(d.bandwidth)}.`,
+        };
+      }
       return { title: `${job} completed`, tone: "success" };
     case "retry_scheduled":
       return {
@@ -184,6 +214,11 @@ export function formatBytes(bytes: number): string {
     unit++;
   }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+/** Bits per second, as players and encoders quote it. */
+export function formatBitrate(bps: number): string {
+  return bps >= 1_000_000 ? `${(bps / 1_000_000).toFixed(1)} Mbps` : `${Math.round(bps / 1000)} kbps`;
 }
 
 export function formatDuration(ms: number): string {

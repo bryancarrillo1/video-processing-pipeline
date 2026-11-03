@@ -46,7 +46,7 @@ Key choices:
 | M2 | Jobs + transactional outbox + dispatcher + placeholder worker, leases/fencing/heartbeat, live events (SSE), dev supervisor | ✅ |
 | M3 | React UI v1: login, library, upload, live pipeline view | ✅ |
 | M4 | Retries with backoff + jitter, error classification, DLQ, reconciler, chaos controls | ✅ |
-| M5 | Real media: ffprobe validation, thumbnails, ffmpeg HLS, progress, verify-before-publish | |
+| M5 | Real media: ffprobe validation, thumbnails, ffmpeg HLS, progress, verify-before-publish | ✅ |
 | M6 | Playback: versioned manifests, CDN cache, playback API, hls.js player | |
 | M7 | Resumable multipart upload in the browser | |
 | M8 | Metrics panel + structured logging | |
@@ -102,11 +102,33 @@ No new components. As `PROJECT_OVERVIEW.md` specifies, the reconciler runs insid
   - Toggles snapped back until the next poll.
   - A `FOR UPDATE` in a CTE made takeover detection silently return nothing.
 
-### M5: Real media processing
-- The worker image is `node:24-bookworm-slim` plus ffmpeg.
-- **Probe:** ffprobe validation, with a duration over 30 min treated as a permanent failure. It extracts a thumbnail and fans out jobs only for heights at or below the source height.
-- **Transcode:** HLS with a fixed GOP so segments align across renditions. Progress comes from `-progress pipe:1`. Output goes to `media/renditions/{videoId}/{height}/a{attempt}/`.
-- Output is verified before publishing, using an ffprobe pass over the produced playlist.
+### M5: Real media processing ✅
+No new components: workers read the original from Blob Storage and write outputs back to it, the "Workers ↔ Storage" edge in `PROJECT_OVERVIEW.md`. Every M2–M4 mechanism (claim, fencing, heartbeat, retries, DLQ, chaos) is unchanged.
+
+- **Two buckets:** originals stay in the private `videos` bucket. Renditions and thumbnails go to a public-read `media` bucket (a SeaweedFS anonymous identity with read access to that bucket only: no list, no write). `MEDIA_PUBLIC_URL` is the browser-facing base URL, which M6 points at the CDN.
+- **Probe:** downloads the original and runs ffprobe. Unreadable input, no video stream, a duration over 30 min, or a source below 360p is a `PermanentError`, so there are no retries. It extracts a thumbnail, stores the source's size, duration and frame rate on the video, and fans out only heights at or below the source (the short side, so portrait video fits the same ladder). All of that commits in one fenced transaction.
+- **Transcode:** ffmpeg to HLS with 4 s segments and a fixed 2 s GOP at a constant frame rate (`-g`, `-keyint_min`, `-sc_threshold 0`), so segment boundaries line up across renditions. Progress comes from `-progress pipe:1`, throttled to about 3 writes/s.
+- **Verify before publish:**
+  1. Locally: the playlist has `#EXT-X-ENDLIST`, every segment exists and is non-empty, and ffprobe decodes the output at the right size and duration.
+  2. The worker uploads to `renditions/{videoId}/{height}/a{attempt}/`, segments first and the playlist last.
+  3. It lists the stored copy and checks every size.
+  
+  Only then does it insert the `renditions` row. That row records the peak segment bit rate (HLS `BANDWIDTH`) for M6's master manifest.
+- **Chaos with real work:** slow mode throttles ffmpeg with `-readrate 5/slowFactor` (5× = real time). A kill or crash also kills the worker's ffmpeg children, as a container crash would.
+- **Tests:** the M2 placeholder handlers became test doubles (`apps/worker/test/fake-handlers.ts`), swapped in like `runtime.crash`, so the job-machinery tests stay fast. New real-media tests use clips generated with ffmpeg `testsrc2` (`scripts/clip.ts`, pulled forward from M9's seed script). They cover:
+  - Segment alignment.
+  - Verification rejecting truncated or empty output.
+  - Abort killing ffmpeg.
+  - The 1080p, 720p and portrait ladders.
+  - Corrupt and too-long uploads failing permanently.
+- **UI:**
+  - Real thumbnails in the library and as the player poster.
+  - Source info in the header.
+  - Lanes marked "skipped: source is 720p: no upscaling".
+  - A "Verified renditions" panel with output size, peak bit rate, segment count and playlist link.
+  - Timeline entries saying what the probe found and what each transcode verified.
+- **Deferred to M9:** the worker Docker image (`node:24-bookworm-slim` + ffmpeg). Locally the worker uses ffmpeg from `PATH` (`FFMPEG_PATH` / `FFPROBE_PATH` override it), and `npm run dev` checks for it up front.
+- The portrait test found a modeling bug before it shipped: `renditions.height` is the rung's name (the short side), so a portrait rendition lost its real pixel height. The fix stores `output_width`/`output_height` separately. `npm run smoke:ui` and `npm run demo:chaos` both pass with real encodes, including a worker killed mid-encode and a crash after publishing but before the DB commit.
 
 ### M6: Playback and CDN
 - Each rendition completion writes an immutable `master.v{n}.m3u8`, then swaps `videos.manifest_version` under the video row lock.
@@ -133,7 +155,7 @@ No new components. As `PROJECT_OVERVIEW.md` specifies, the reconciler runs insid
 - Logging uses pino with child loggers bound to `videoId` / `jobId` / `attempt`.
 
 ### M9: Packaging, CI, docs and deploy
-- One multi-stage Dockerfile. The compose `app` profile adds the API, the dispatcher, 2 workers and an nginx gateway. `npm run demo` starts everything at `http://localhost:8080`.
+- One multi-stage Dockerfile. The worker stage is `node:24-bookworm-slim` plus ffmpeg (moved here from M5). The compose `app` profile adds the API, the dispatcher, 2 workers and an nginx gateway. `npm run demo` starts everything at `http://localhost:8080`.
 - `scripts/seed.ts` generates a 1080p test clip with ffmpeg `testsrc2`, so no binaries are committed.
 - GitHub Actions runs the typecheck, the tests with real containers, and a Playwright smoke test.
 - Hosted mode (`DEMO_PUBLIC=true`) adds:

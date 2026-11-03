@@ -6,11 +6,20 @@
 //   npm run dev                # 2 workers
 //   npm run dev -- --workers 3
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({ options: { workers: { type: "string", default: "2" } } });
 const workerCount = Number(values.workers);
+
+// Workers exit at once without ffmpeg, and the restart loop below would just
+// repeat that every second. Check up front instead.
+for (const tool of [process.env.FFMPEG_PATH ?? "ffmpeg", process.env.FFPROBE_PATH ?? "ffprobe"]) {
+  if (spawnSync(tool, ["-version"]).status !== 0) {
+    console.error(`${tool} not found. Install ffmpeg (macOS: brew install ffmpeg; Debian: apt install ffmpeg).`);
+    process.exit(1);
+  }
+}
 
 interface Service {
   name: string;

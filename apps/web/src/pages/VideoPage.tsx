@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
-import type { JobEventView, JobView, VideoDetail } from "@vpp/core/domain";
+import type { JobEventView, JobView, RenditionView, VideoDetail } from "@vpp/core/domain";
 import { api, ApiError } from "../lib/api.ts";
 import {
   buildLanes,
   buildSteps,
   describeEvent,
+  formatBitrate,
   formatDuration,
   formatRelative,
   jobLabel,
@@ -48,7 +49,7 @@ function VideoView({ video }: { video: VideoDetail }) {
     (j) => j.state === "running" || (j.state === "pending" && new Date(j.nextAttemptAt).getTime() > clockNow),
   );
   const now = useNow(ticking);
-  const lanes = useMemo(() => buildLanes(video.jobs), [video.jobs]);
+  const lanes = useMemo(() => buildLanes(video.jobs, video.source), [video.jobs, video.source]);
   const steps = useMemo(() => buildSteps(video.status, video.jobs), [video.status, video.jobs]);
   const labelFor = useMemo(() => {
     const byId = new Map(video.jobs.map((j) => [j.jobId, jobLabel(j)]));
@@ -68,6 +69,12 @@ function VideoView({ video }: { video: VideoDetail }) {
         </div>
         <div className={styles.subRow}>
           <ResolutionChips available={video.availableResolutions} />
+          {video.source && (
+            <span className="muted" title="What the probe found in the uploaded file">
+              Source {video.source.width}×{video.source.height} · {formatDuration(video.source.durationS * 1000)} ·{" "}
+              {Math.round(video.source.frameRate * 100) / 100} fps
+            </span>
+          )}
           <span className="muted">Uploaded {formatRelative(video.createdAt)}</span>
           <code className={styles.id}>{video.videoId}</code>
         </div>
@@ -78,6 +85,8 @@ function VideoView({ video }: { video: VideoDetail }) {
       <div className={styles.columns}>
         <div className={styles.mainCol}>
           <PlayerPlaceholder video={video} />
+
+          {video.renditions.length > 0 && <Renditions renditions={video.renditions} />}
 
           <section className={`card ${styles.panel}`}>
             <div className={styles.panelHead}>
@@ -121,8 +130,12 @@ function Stepper({ steps }: { steps: Step[] }) {
 
 function PlayerPlaceholder({ video }: { video: VideoDetail }) {
   const best = video.availableResolutions.at(-1);
+  // The probe's thumbnail doubles as the poster frame, dimmed behind the text.
+  const poster = video.thumbnailUrl
+    ? { backgroundImage: `linear-gradient(rgb(11 13 18 / 72%), rgb(11 13 18 / 72%)), url(${video.thumbnailUrl})` }
+    : undefined;
   return (
-    <div className={styles.player}>
+    <div className={styles.player} style={poster}>
       {video.playbackReady ? (
         <>
           <div className={styles.playerIcon}>▶</div>
@@ -131,7 +144,7 @@ function PlayerPlaceholder({ video }: { video: VideoDetail }) {
             {video.status === "ready"
               ? "All renditions are done."
               : "Higher resolutions are still processing; playback doesn't wait for them."}{" "}
-            The HLS player arrives in M6.
+            The HLS player (with a master manifest across renditions) arrives in M6.
           </div>
         </>
       ) : video.status === "failed" ? (
@@ -144,6 +157,31 @@ function PlayerPlaceholder({ video }: { video: VideoDetail }) {
         </>
       )}
     </div>
+  );
+}
+
+/** Outputs that passed verification and are published. Only these are ever advertised. */
+function Renditions({ renditions }: { renditions: RenditionView[] }) {
+  return (
+    <section className={`card ${styles.panel}`}>
+      <div className={styles.panelHead}>
+        <h2>Verified renditions</h2>
+        <span className="muted">HLS · 4 s segments, aligned across renditions</span>
+      </div>
+      <ul className={styles.renditions}>
+        {renditions.map((r) => (
+          <li key={r.height}>
+            <strong>{r.height}p</strong>
+            <span>{r.outputWidth && r.outputHeight ? `${r.outputWidth}×${r.outputHeight}` : "—"}</span>
+            <span>{r.bandwidth ? `peak ${formatBitrate(r.bandwidth)}` : "—"}</span>
+            <span>{r.segmentCount ?? "—"} segments</span>
+            <a href={r.playlistUrl} target="_blank" rel="noreferrer">
+              index.m3u8 ↗
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -170,11 +208,13 @@ function RetryButton({ jobId }: { jobId: string }) {
 }
 
 function LaneRow({ lane, now }: { lane: Lane; now: number }) {
-  if (lane.kind === "placeholder") {
+  if (lane.kind === "placeholder" || lane.kind === "skipped") {
     return (
-      <div className={cx(styles.lane, styles.lanePlaceholder)}>
+      <div className={cx(styles.lane, styles.lanePlaceholder, lane.kind === "skipped" && styles.laneSkipped)}>
         <div className={styles.laneLabel}>{lane.label}</div>
-        <div className={styles.laneWaiting}>waiting for probe to fan out</div>
+        <div className={styles.laneWaiting}>
+          {lane.kind === "skipped" ? `skipped: ${lane.reason}` : "waiting for probe to fan out"}
+        </div>
       </div>
     );
   }

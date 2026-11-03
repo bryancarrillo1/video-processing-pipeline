@@ -15,6 +15,10 @@ import {
 import { buildApp } from "../../api/src/server.ts";
 import { dispatchOnce } from "../../dispatcher/src/dispatcher.ts";
 import { pollOnce, runWorker } from "../src/worker.ts";
+import { useFakeHandlers } from "./fake-handlers.ts";
+
+// The job machinery, with fake handlers; real ffmpeg is in media-pipeline.test.ts.
+useFakeHandlers();
 
 let app: FastifyInstance;
 const user = `pipeline-${crypto.randomUUID()}`;
@@ -62,7 +66,7 @@ async function videoDetail(videoId: string) {
   return (await app.inject({ url: `/videos/${videoId}`, headers })).json();
 }
 
-describe("processing pipeline (placeholder worker)", () => {
+describe("processing pipeline (fake handlers)", () => {
   it("completing an upload creates exactly one probe job and outbox row, even when repeated", async () => {
     const videoId = await uploadVideo();
     const { rows: [upload] } = await pool.query(`SELECT id FROM upload_sessions WHERE video_id = $1`, [videoId]);

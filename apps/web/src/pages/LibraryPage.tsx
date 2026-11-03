@@ -42,7 +42,7 @@ export function LibraryPage() {
           {videos.map((v) => (
             <li key={v.videoId}>
               <Link to={`/videos/${v.videoId}`} className={`card ${styles.tile}`}>
-                <Thumbnail videoId={v.videoId} status={v.status} progress={v.progress} />
+                <Thumbnail videoId={v.videoId} url={v.thumbnailUrl} status={v.status} progress={v.progress} />
                 <div className={styles.body}>
                   <h3 className={styles.title} title={v.title}>
                     {v.title}

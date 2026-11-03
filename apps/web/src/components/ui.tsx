@@ -75,8 +75,21 @@ export function ProgressBar({ value, state }: { value: number; state: JobState |
   );
 }
 
-/** Deterministic gradient per video until real thumbnails arrive in M5. */
-export function Thumbnail({ videoId, status, progress }: { videoId: string; status: VideoStatus; progress: number | null }) {
+/**
+ * The frame the probe extracted, served from the public media bucket. Until
+ * the probe has run (or if it failed), a deterministic gradient per video.
+ */
+export function Thumbnail({
+  videoId,
+  url,
+  status,
+  progress,
+}: {
+  videoId: string;
+  url: string | null;
+  status: VideoStatus;
+  progress: number | null;
+}) {
   let hash = 0;
   for (const ch of videoId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   const hue = hash % 360;
@@ -84,6 +97,7 @@ export function Thumbnail({ videoId, status, progress }: { videoId: string; stat
   const busy = status === "queued" || status === "processing";
   return (
     <div className={styles.thumb} style={{ background }}>
+      {url && <img className={styles.thumbImg} src={url} alt="" loading="lazy" />}
       <div className={styles.thumbIcon}>
         {busy ? (
           <div className={styles.spinner} />

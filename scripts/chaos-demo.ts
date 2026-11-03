@@ -1,18 +1,19 @@
 // Chaos walkthrough: drives the real UI in headless Chromium through every
 // M4 failure scenario and saves a screenshot of each, against a running stack.
 //
-//   JOB_LEASE_SECONDS=10 PLACEHOLDER_STEP_MS=500 npm run dev   # in one terminal
-//   npm run demo:chaos -- --out screenshots/chaos               # in another
+//   JOB_LEASE_SECONDS=10 npm run dev                # in one terminal
+//   npm run demo:chaos -- --out screenshots/chaos   # in another
 //
 // Scenarios: transient failures with backoff, a permanent failure fixed by an
 // operator retry, killing a busy worker, a dispatcher outage, and a crash
 // between doing the work and committing it. Exits non-zero if any scenario
 // doesn't recover or the page logs an error.
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { chromium, type Page } from "playwright";
+import { makeClip } from "./clip.ts";
 
 const { values } = parseArgs({
   options: {
@@ -23,6 +24,9 @@ const { values } = parseArgs({
 const out = path.resolve(values.out);
 const base = values.url;
 await mkdir(out, { recursive: true });
+// Real video, so every scenario runs real ffprobe/ffmpeg work. 8 s is long
+// enough to kill a worker mid-encode once slow mode makes it real time.
+const clip = await readFile(await makeClip({ width: 1920, height: 1080, seconds: 8 }));
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
@@ -37,8 +41,8 @@ const api = (method: string, url: string, data?: unknown) =>
     .then((r) => r.json().catch(() => null));
 
 async function upload(title: string): Promise<string> {
-  const created = await api("POST", "/videos", { title, fileName: "clip.mp4", fileSizeBytes: 5 });
-  await page.request.put(created.uploadUrl, { data: Buffer.from("hello") });
+  const created = await api("POST", "/videos", { title, fileName: "clip.mp4", fileSizeBytes: clip.length });
+  await page.request.put(created.uploadUrl, { data: clip });
   await api("POST", `/videos/${created.videoId}/uploads/${created.uploadId}/complete`);
   return created.videoId;
 }

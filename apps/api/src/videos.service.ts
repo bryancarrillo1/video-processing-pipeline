@@ -6,6 +6,7 @@ import {
   emitEvent,
   enqueueJob,
   headObjectSize,
+  mediaUrl,
   originalKey,
   pool,
   presignUpload,
@@ -17,6 +18,7 @@ import {
   type JobView,
   type JobKind,
   type JobState,
+  type RenditionView,
   type UploadSessionStatus,
   type VideoDetail,
   type VideoStatus,
@@ -209,6 +211,7 @@ interface VideoRow {
   title: string;
   status: VideoStatus;
   created_at: Date;
+  thumbnail_key: string | null;
   // Aggregated from `renditions`: only verified outputs are ever listed.
   heights: number[];
   progress: number | null;
@@ -216,7 +219,7 @@ interface VideoRow {
 
 // One query for both list and detail views; `$2` optionally narrows to one video.
 const VIDEO_SELECT = `
-  SELECT v.id, v.title, v.status, v.created_at,
+  SELECT v.id, v.title, v.status, v.created_at, v.thumbnail_key,
          coalesce(array_agg(r.height ORDER BY r.height) FILTER (WHERE r.height IS NOT NULL), '{}') AS heights,
          (SELECT avg(j.progress)::float8 FROM processing_jobs j
            WHERE j.video_id = v.id AND j.kind = 'transcode') AS progress
@@ -237,6 +240,7 @@ function toSummary(row: VideoRow): VideoSummary {
     playbackReady: row.heights.length > 0,
     availableResolutions: row.heights,
     progress: row.progress,
+    thumbnailUrl: row.thumbnail_key ? mediaUrl(row.thumbnail_key) : null,
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -259,6 +263,19 @@ export async function getVideoStatus(ownerId: string, videoId: string): Promise<
 
 export async function getVideoDetail(ownerId: string, videoId: string): Promise<VideoDetail> {
   const summary = await findVideo(ownerId, videoId);
+
+  const { rows: [source] } = await pool.query<{
+    width: number | null; height: number | null; duration_s: number | null; frame_rate: number | null;
+  }>(`SELECT width, height, duration_s, frame_rate FROM videos WHERE id = $1`, [videoId]);
+
+  const { rows: renditions } = await pool.query<{
+    height: number; output_width: number | null; output_height: number | null; bandwidth: number | null;
+    segment_count: number | null; output_prefix: string; verified_at: Date;
+  }>(
+    `SELECT height, output_width, output_height, bandwidth, segment_count, output_prefix, verified_at
+       FROM renditions WHERE video_id = $1 ORDER BY height`,
+    [videoId],
+  );
 
   const { rows: jobs } = await pool.query<{
     id: string; kind: JobKind; target_height: number; state: JobState; attempt: number;
@@ -283,6 +300,20 @@ export async function getVideoDetail(ownerId: string, videoId: string): Promise<
 
   return {
     ...summary,
+    // The probe fills these in; until then we only know what the client claimed.
+    source:
+      source?.width && source.height && source.duration_s !== null && source.frame_rate !== null
+        ? { width: source.width, height: source.height, durationS: source.duration_s, frameRate: source.frame_rate }
+        : null,
+    renditions: renditions.map((r): RenditionView => ({
+      height: r.height,
+      outputWidth: r.output_width,
+      outputHeight: r.output_height,
+      bandwidth: r.bandwidth,
+      segmentCount: r.segment_count,
+      playlistUrl: mediaUrl(`${r.output_prefix}index.m3u8`),
+      verifiedAt: r.verified_at.toISOString(),
+    })),
     jobs: jobs.map((j): JobView => ({
       jobId: j.id,
       kind: j.kind,

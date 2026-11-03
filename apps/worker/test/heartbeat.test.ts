@@ -6,18 +6,20 @@ import { afterAll, expect, it } from "vitest";
 // rejects every attempt forever (a livelock the M2 chaos run actually hit).
 //
 // Config is read at import time and Vitest isolates modules per test file, so
-// we set a 1s lease and ~3s jobs here and import everything afterwards.
+// we set a 1s lease here and import everything afterwards. Fake handlers with
+// 300 ms steps make each job take ~3 s.
 process.env.JOB_LEASE_SECONDS = "1";
-process.env.PLACEHOLDER_STEP_MS = "300";
 
 const { pool, withTransaction, enqueueJob } = await import("@vpp/core");
 const { dispatchOnce } = await import("../../dispatcher/src/dispatcher.ts");
 const { pollOnce } = await import("../src/worker.ts");
+const { useFakeHandlers } = await import("./fake-handlers.ts");
+useFakeHandlers(300);
 
 afterAll(() => pool.end());
 
 it("keeps a long-running job's lease alive until it completes", async () => {
-  // Arrange a transcode job directly (no upload needed for the placeholder).
+  // Arrange a transcode job directly (no upload needed for the fake handler).
   const videoId = crypto.randomUUID();
   await withTransaction(async (tx) => {
     await tx.query(

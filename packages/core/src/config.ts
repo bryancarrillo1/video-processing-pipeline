@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { z } from "zod";
 
 // Like a pydantic BaseSettings: parse process.env once, fail fast on bad values,
@@ -8,7 +10,13 @@ const ConfigSchema = z.object({
   S3_REGION: z.string().default("us-east-1"),
   S3_ACCESS_KEY: z.string().default("vpp"),
   S3_SECRET_KEY: z.string().default("vpp-secret"),
+  // Private originals: reachable only through presigned URLs.
   S3_BUCKET: z.string().default("videos"),
+  // Public-read outputs: renditions, playlists, thumbnails.
+  MEDIA_BUCKET: z.string().default("media"),
+  // Base URL the *browser* uses for media. Defaults to the bucket on the S3
+  // endpoint; M6 points it at the CDN instead.
+  MEDIA_PUBLIC_URL: z.url().optional(),
   API_PORT: z.coerce.number().int().default(3000),
   UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 ** 3),
@@ -25,8 +33,13 @@ const ConfigSchema = z.object({
 
   // How long a claimed job is reserved for one worker before others may take it.
   JOB_LEASE_SECONDS: z.coerce.number().int().positive().default(30),
-  // M2 placeholder worker: duration of each fake progress step (10 steps per job).
-  PLACEHOLDER_STEP_MS: z.coerce.number().int().nonnegative().default(400),
+  // Media processing (M5). Binaries are looked up on PATH unless overridden.
+  FFMPEG_PATH: z.string().default("ffmpeg"),
+  FFPROBE_PATH: z.string().default("ffprobe"),
+  // PROJECT_OVERVIEW input limit: "up to 30 minutes per video".
+  MAX_DURATION_SECONDS: z.coerce.number().positive().default(30 * 60),
+  // Scratch space for downloads and ffmpeg output; one subdirectory per attempt.
+  WORK_DIR: z.string().default(path.join(os.tmpdir(), "vpp-work")),
 
   // Retries (PROJECT_OVERVIEW: "increasing delays with jitter").
   RETRY_BASE_MS: z.coerce.number().int().positive().default(2_000),
@@ -41,8 +54,12 @@ const ConfigSchema = z.object({
 
   // Worker registry heartbeat; a worker silent for 5 beats is considered dead.
   WORKER_HEARTBEAT_MS: z.coerce.number().int().positive().default(1_000),
-});
+})
+  // Fill in defaults that depend on other settings. `transform` changes the
+  // parsed (output) type too, so MEDIA_PUBLIC_URL is a plain string from here on.
+  .transform((c) => ({ ...c, MEDIA_PUBLIC_URL: c.MEDIA_PUBLIC_URL ?? `${c.S3_ENDPOINT}/${c.MEDIA_BUCKET}` }));
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 export const config: Config = ConfigSchema.parse(process.env);
+

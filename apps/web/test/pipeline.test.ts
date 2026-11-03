@@ -4,6 +4,7 @@ import {
   buildLanes,
   buildSteps,
   describeEvent,
+  formatBitrate,
   formatBytes,
   formatDuration,
   shortWorker,
@@ -46,7 +47,7 @@ describe("buildLanes", () => {
   it("puts the probe first and transcodes in height order, filling in real jobs", () => {
     const lanes = buildLanes([
       job({ targetHeight: 1080 }),
-      job({ kind: "probe", targetHeight: 0, state: "completed" }),
+      job({ kind: "probe", targetHeight: 0, state: "running" }),
       job({ targetHeight: 360 }),
     ]);
     expect(lanes.map((l) => [l.kind, l.label])).toEqual([
@@ -55,6 +56,21 @@ describe("buildLanes", () => {
       ["placeholder", "Transcode 720p"],
       ["job", "Transcode 1080p"],
     ]);
+  });
+
+  it("marks heights the probe didn't fan out as skipped, with the reason", () => {
+    // Fan-out commits with the probe's completion, so a missing job after
+    // that is final: the source was too small to upscale from.
+    const jobs = [job({ kind: "probe", targetHeight: 0, state: "completed" }), job({ targetHeight: 360 })];
+    const lanes = buildLanes(jobs, { width: 1280, height: 720 }).filter((l) => l.kind === "skipped");
+    expect(lanes).toEqual([
+      { kind: "skipped", key: "t720", label: "Transcode 720p", reason: expect.any(String) },
+      { kind: "skipped", key: "t1080", label: "Transcode 1080p", reason: "source is 720p: no upscaling" },
+    ]);
+    const failed = buildLanes([job({ kind: "probe", targetHeight: 0, state: "failed" })]);
+    expect(failed.slice(1).map((l) => l.kind === "skipped" && l.reason)).toEqual(
+      Array(3).fill("probe failed: nothing to transcode"),
+    );
   });
 });
 
@@ -131,6 +147,25 @@ describe("describeEvent", () => {
     expect(d.note).toMatch(/Fencing/);
   });
 
+  it("summarizes what the probe found and what a transcode verified", () => {
+    const probe = describeEvent(
+      event({
+        type: "completed",
+        jobId: "j",
+        detail: { width: 1920, height: 1080, durationS: 12.5, frameRate: 30, videoCodec: "h264", hasAudio: true, renditions: [360, 720, 1080] },
+      }),
+      () => "Probe",
+    );
+    expect(probe.title).toBe("Probe completed: 1920×1080, 12.5 s");
+    expect(probe.note).toBe("h264 at 30 fps with audio. Fanning out: 360p, 720p, 1080p.");
+    const transcode = describeEvent(
+      event({ type: "completed", jobId: "j", detail: { width: 1280, height: 720, bandwidth: 2_400_000, segmentCount: 3 } }),
+      labelFor,
+    );
+    expect(transcode).toMatchObject({ title: "Transcode 720p completed and published", tone: "success" });
+    expect(transcode.note).toBe("Verified before publishing: 3 segments at 1280×720, peak 2.4 Mbps.");
+  });
+
   it("describes status transitions", () => {
     expect(describeEvent(event({ type: "video_status", detail: { from: "processing", to: "ready" } }), labelFor)).toEqual({
       title: "Video processing → ready",
@@ -149,5 +184,7 @@ describe("formatting", () => {
     expect(formatDuration(95_000)).toBe("1m 35s");
     expect(shortWorker("Bryans-MacBook-Pro-19081")).toBe("Bryans-MacBo…:19081");
     expect(shortWorker("worker-7")).toBe("worker:7");
+    expect(formatBitrate(812_345)).toBe("812 kbps");
+    expect(formatBitrate(2_449_000)).toBe("2.4 Mbps");
   });
 });

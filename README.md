@@ -1,8 +1,8 @@
 # Video Processing Pipeline
 
-Upload → process → watch: a TypeScript implementation of the system design in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md). It covers a transactional outbox, queue-driven workers with fenced leases and heartbeats, retries with backoff and a dead-letter queue, a reconciler, idempotent APIs, and a React UI that shows the pipeline working live, including a chaos panel for breaking it on purpose. It's built milestone by milestone; see [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
+Upload → process → watch: a TypeScript implementation of the system design in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md). It covers a transactional outbox, queue-driven workers with fenced leases and heartbeats, real ffprobe/ffmpeg processing into verified HLS renditions, retries with backoff and a dead-letter queue, a reconciler, idempotent APIs, and a React UI that shows the pipeline working live, including a chaos panel for breaking it on purpose. It's built milestone by milestone; see [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
-![Pipeline view: probe done, two transcodes running on different workers, live event timeline](docs/images/pipeline-running.png)
+![Pipeline view: probe found a 1920×1080 source, two transcodes running on different workers, live event timeline](docs/images/pipeline-running.png)
 
 | Milestone | Status |
 |---|---|
@@ -11,17 +11,21 @@ Upload → process → watch: a TypeScript implementation of the system design i
 | M2 Jobs, transactional outbox, dispatcher, placeholder worker, leases + fencing + heartbeat, SSE live events | ✅ |
 | M3 React UI: login, library, upload with progress, live pipeline view + event timeline | ✅ |
 | M4 Retries with backoff + jitter, dead-letter queue, reconciler, worker registry, chaos controls | ✅ |
-| M5 Real media: ffprobe/ffmpeg HLS, thumbnails, verify-before-publish | ⏳ next |
-| M6 Versioned manifests, playback API, CDN cache, hls.js player | |
+| M5 Real media: ffprobe/ffmpeg HLS, thumbnails, verify-before-publish | ✅ |
+| M6 Versioned manifests, playback API, CDN cache, hls.js player | ⏳ next |
 | M7 Resumable multipart upload in the browser | |
 | M8 Metrics panel + structured logging | |
 | M9 Docker packaging, CI, docs, hosted demo | |
 
 ## The UI
 
-| Upload: bytes go browser → S3 directly | Library: live status and playable resolutions |
+| Upload: bytes go browser → S3 directly | Library: probe thumbnail, live status, playable resolutions |
 |---|---|
 | ![Upload page](docs/images/upload.png) | ![Library](docs/images/library.png) |
+
+**When it's done:** every rendition was verified (complete playlist, non-empty segments, decodes at the right size and length) and re-checked in storage before it was recorded. Segments are 4 s and line up across renditions.
+
+![Video page with verified renditions, source info and the event timeline](docs/images/renditions.png)
 
 ### Breaking it on purpose: the System page
 
@@ -33,7 +37,7 @@ The System page shows live workers, queue/outbox/DLQ depths and fault-injection 
 |---|---|
 | ![Retry countdown on a job lane](docs/images/retry-backoff.png) | ![Failed probe with a Retry button](docs/images/permanent-failure.png) |
 
-**After killing a worker mid-transcode:** its lease expired without a heartbeat, the reconciler counted the attempt as failed and scheduled a retry, and attempt 2 finished the job.
+**After killing a worker mid-transcode:** the worker and its ffmpeg died together, the lease expired without a heartbeat, another worker reclaimed the job, and attempt 2 re-encoded and published under its own `a2/` prefix.
 
 ![Pipeline view after killing a worker](docs/images/pipeline-chaos.png)
 
@@ -50,18 +54,22 @@ flowchart LR
   D -->|"exhausted jobs"| DLQ["Dead-letter queue"]
   Q --> W["Workers ×2"]
   W -->|"claim lease · heartbeat · fenced write"| PG
+  S3 -->|"original"| W
+  W -->|"HLS + thumbnail"| MEDIA[("S3 media bucket<br/>public read")]
+  C -->|"thumbnails, playlists"| MEDIA
 ```
 
 1. `POST /videos` creates the video and returns a presigned upload URL. The bytes go straight to storage.
 2. `POST …/complete` checks the object in storage, then commits the `probe` job and its outbox row in one transaction.
 3. The dispatcher sends due outbox rows to the queue, at least once.
 4. A worker claims the job row, getting a lease and an attempt number that acts as a fencing token. It renews the lease while it works and commits results only if it still owns the job.
-5. The probe fans out 360/720/1080 transcode jobs. Each finished rendition becomes playable immediately.
-6. A failed attempt is **retried** with exponential backoff and jitter, up to 4 attempts. **Permanent** errors (corrupt input) skip retries. Either way, a job that ends up failed is **dead-lettered** through the outbox, in the same transaction that marks it failed.
-7. The **reconciler**, inside the dispatcher, catches what the queue can't: running jobs whose worker died (lease expired), pending jobs whose message was lost, and dead worker registrations.
-8. Every state change emits an event: a row in `job_events` plus `pg_notify`. The API streams these to the UI over SSE, and the UI refetches what changed.
+5. The **probe** runs ffprobe on the original: it rejects unreadable, too-long or too-small input permanently, extracts a thumbnail, and fans out a transcode only for each height the source supports (no upscaling).
+6. Each **transcode** encodes HLS with a fixed GOP, so segments align across renditions, reporting live progress. It verifies the output, publishes it to `media/renditions/{video}/{height}/a{attempt}/`, re-checks the stored copy, and only then records the rendition. Each finished rendition counts as playable immediately.
+7. A failed attempt is **retried** with exponential backoff and jitter, up to 4 attempts. **Permanent** errors (corrupt input) skip retries. Either way, a job that ends up failed is **dead-lettered** through the outbox, in the same transaction that marks it failed.
+8. The **reconciler**, inside the dispatcher, catches what the queue can't: running jobs whose worker died (lease expired), pending jobs whose message was lost, and dead worker registrations.
+9. Every state change emits an event: a row in `job_events` plus `pg_notify`. The API streams these to the UI over SSE, and the UI refetches what changed.
 
-Workers still run **placeholder** handlers (sleep + progress); real ffmpeg arrives in M5.
+Playback through a master manifest, the CDN and an hls.js player arrives in M6. Until then, each rendition's own `index.m3u8` is linked from the video page; Safari or VLC can play it.
 
 ## Layout
 
@@ -69,32 +77,34 @@ Workers still run **placeholder** handlers (sleep + progress); real ffmpeg arriv
 apps/web/          React + Vite UI: library, upload, live pipeline view, System page
 apps/api/          Fastify HTTP API: routes → service → SQL; SSE event hub; /admin operator API
 apps/dispatcher/   Outbox → queue relay + reconciler
-apps/worker/       Queue consumer: claim, heartbeat, handlers, retries, fault injection
+apps/worker/       Queue consumer: claim, heartbeat, ffprobe/ffmpeg handlers, verification, retries, fault injection
 packages/core/     Shared config, Postgres, S3, SQS, job state machine, domain types
 migrations/        Plain .sql files, applied in filename order
 infra/             Local S3 (SeaweedFS) and SQS (ElasticMQ) config
-scripts/           dev supervisor, setup, test setup, browser smoke test, chaos walkthrough
+scripts/           dev supervisor, setup, test setup, test-clip generator, browser smoke test, chaos walkthrough
 docs/              Roadmap and screenshots (architecture and demo docs come in M9)
 ```
 
 ## Running locally
 
-Requires Node 24+ and Docker.
+Requires Node 24+, Docker and ffmpeg (`brew install ffmpeg` / `apt install ffmpeg`; the worker finds `ffmpeg` and `ffprobe` on `PATH`, or set `FFMPEG_PATH` / `FFPROBE_PATH`).
 
 ```sh
 npm install
 npm run infra:up     # Postgres :5433, S3 :8333, SQS :9324
-npm run setup        # apply migrations, create bucket (safe to re-run)
+npm run setup        # apply migrations, create both buckets (safe to re-run)
 npm test             # integration tests (isolated DB, queue and bucket)
 npm run dev          # UI :5173, API :3000, dispatcher, 2 workers (auto-restarting)
 ```
 
-Open **http://localhost:5173**, pick any username, and upload a file. Until M5 the workers are placeholders and don't read the bytes, so any file works.
+Open **http://localhost:5173**, pick any username, and upload a video. Anything ffmpeg can read works. A file that isn't a video fails the probe permanently, which is a quick way to see the dead-letter path. Need a test clip? `ffmpeg -f lavfi -i testsrc2=size=1920x1080:duration=20 -pix_fmt yuv420p clip.mp4`.
+
+If you pulled this after M4, restart the S3 container once (`docker compose restart s3`) so it picks up the public-read rule for the media bucket.
 
 - `npm run dev -- --workers 3` runs more workers. `npm run dev:web`, `dev:api`, `dev:worker` and `dev:dispatcher` each run one service with reload on change.
-- `PLACEHOLDER_STEP_MS=800 npm run dev` slows the fake jobs down, so you have time to watch, or to kill a worker.
+- The System page's **slow mode** throttles ffmpeg (5× = real time), so you have time to watch, or to kill a worker mid-encode.
 - `npm run smoke:ui` (with the stack running) drives the UI in headless Chromium and saves screenshots to `./screenshots`. Run `npx playwright install chromium` once first.
-- `npm run demo:chaos` (with the stack running) walks through every failure scenario in the browser: retries, a permanent failure plus operator retry, a killed worker, a dispatcher outage, and a crash before commit. It asserts each one recovers. Start the stack with `JOB_LEASE_SECONDS=10 PLACEHOLDER_STEP_MS=500 npm run dev` so lease expiries happen quickly.
+- `npm run demo:chaos` (with the stack running) walks through every failure scenario in the browser: retries, a permanent failure plus operator retry, a killed worker, a dispatcher outage, and a crash before commit. It asserts each one recovers. Start the stack with `JOB_LEASE_SECONDS=10 npm run dev` so lease expiries happen quickly.
 
 ### Walk through the pipeline with curl
 
@@ -103,7 +113,7 @@ Open **http://localhost:5173**, pick any username, and upload a file. Until M5 t
 curl -N localhost:3000/events -H 'x-user-id: alice'
 
 # In another
-printf 'fake video bytes' > /tmp/clip.mp4
+ffmpeg -f lavfi -i testsrc2=size=1280x720:duration=10 -pix_fmt yuv420p /tmp/clip.mp4
 SIZE=$(stat -f%z /tmp/clip.mp4)   # Linux: stat -c%s
 
 curl -s -X POST localhost:3000/videos \
@@ -128,13 +138,15 @@ curl -s localhost:3000/videos/<videoId> -H 'x-user-id: alice'   # jobs + event t
 | Call `/complete` twice | One probe job, same response | Conditional updates + `UNIQUE(video_id, kind, target_height)` |
 | `/complete` before uploading | `409 upload_incomplete` | Storage is checked, not trusted |
 | Upload fewer bytes than declared | Storage rejects the PUT | `Content-Length` is part of the signature |
+| Upload a file that isn't a video | The probe fails on attempt 1 with "Not a readable video file"; no transcodes are created | ffprobe can't decode it: a `PermanentError`, never retried |
+| Upload a 720p video | Only 360p and 720p are produced; the 1080p lane says "skipped: no upscaling" | The probe measures the source; fan-out commits with the probe's completion |
 | **Kill** a busy worker on the System page (or `kill -9` its PID) | It shows as dead; its job is reclaimed as attempt 2 after one lease and the video still ends `ready` | Lease expiry + visibility timeout; the reconciler counts the lost attempt |
 | Ctrl-C `npm run dev` while jobs are running, then start it again | The jobs are picked up immediately, not after a lease | Graceful shutdown releases the lease (fenced) and makes the message visible again |
 | Set the **transient failure rate** to 60% | Jobs fail, show "retrying in 1.2 s", and mostly succeed on a later attempt | Exponential backoff with jitter; the outbox row only becomes due when the backoff ends |
 | Set it to 100% | Each job fails 4 times, then lands in the dead-letter queue; **Redrive all** brings it back | Bounded retries; redrive raises `max_attempts` but never resets the attempt (fencing) number |
 | Turn on **permanent failures** | Jobs fail on attempt 1 with no retries; a **Retry job** button appears | Corrupt input shouldn't be retried |
 | **Pause the dispatcher**, then upload | The upload still succeeds; the video stays `queued` and the outbox backlog grows, then drains on resume | The job and its outbox row commit together; dispatch is decoupled |
-| **Arm one crash** | The next job's worker dies after the work but before the DB commit; the job is redone as attempt 2 | "Output saved, database not updated": nothing is lost or double-counted |
+| **Arm one crash** | The next job's worker dies after publishing its output but before the DB commit; the job is redone as attempt 2 | "Output saved, database not updated": the `a1/` output is orphaned and never advertised; `a2/` is published and recorded |
 
 ## Notes and gotchas
 
@@ -146,4 +158,7 @@ curl -s localhost:3000/videos/<videoId> -H 'x-user-id: alice'   # jobs + event t
 - **Bucket CORS:** the browser PUTs straight to S3 from the UI's origin, so `npm run setup` applies a CORS rule (`CORS_ORIGINS`) to the bucket. The API itself needs no CORS, because the Vite dev server proxies `/api`.
 - **Optimistic UI for controls:** the System page polls every second. Controlled toggles that only reflected polled state snapped back for up to a second after each click, which the chaos walkthrough caught. They now show the new value immediately and roll back if the save fails.
 - **A locking CTE can see nothing:** detecting "this claim took over a dead worker's lease" first used `WITH prev AS (SELECT … FOR UPDATE)`. Postgres evaluates the CTE lazily, after the `UPDATE` has changed the row, and silently skips rows "updated by the current command" when locking, so it returned nothing. A plain `SELECT` reads the pre-statement snapshot, which is what's wanted. A test pins this down.
+- **A rendition's "height" is a name, not a size.** 360/720/1080 are rungs on a ladder, measured on the short side so portrait video fits the same ladder. The first version stored only that and lost a portrait rendition's real 640 px height. A test caught it, and the actual output size is now stored separately.
+- **ffmpeg children don't die with Node.** `process.exit` leaves spawned processes running. A simulated crash kills the worker's ffmpeg first, as a container crash would. A crashed attempt's scratch directory (under `WORK_DIR`, the OS temp dir by default) is left behind. Each attempt uses its own directory name, so leftovers never collide.
+- **Public read is the storage's job.** The `media` bucket is readable anonymously because `infra/seaweedfs-s3.json` grants an `anonymous` identity `Read:media`, with no list and no write. The app never makes anything public itself, and `videos` (originals) stays private.
 - **Postgres `bigint`** comes back from `pg` as a string, since JS numbers can't hold every 64-bit integer. It's converted explicitly where it's used.

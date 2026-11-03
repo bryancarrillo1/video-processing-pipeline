@@ -121,8 +121,8 @@ export function UploadPage() {
           />
           {selected.file.type && !selected.file.type.startsWith("video/") && (
             <p className={styles.warn}>
-              This doesn't look like a video. The placeholder workers will still process it; real ffprobe
-              validation arrives in M5.
+              This doesn't look like a video. It will still upload, but the probe will reject it as a
+              permanent failure (a good way to see one).
             </p>
           )}
           {tooBig && <p className={styles.errorText}>Files over 5 GB aren't supported.</p>}

@@ -17,6 +17,9 @@ import { dispatchOnce, runDispatcher } from "../../dispatcher/src/dispatcher.ts"
 import { reconcileOnce } from "../../dispatcher/src/reconciler.ts";
 import { SimulatedCrash, runtime } from "../src/faults.ts";
 import { pollOnce, runWorker } from "../src/worker.ts";
+import { useFakeHandlers } from "./fake-handlers.ts";
+
+useFakeHandlers();
 
 const user = `reliability-${crypto.randomUUID()}`;
 const headers = { "x-user-id": user };
@@ -38,7 +41,7 @@ afterAll(async () => {
   await pool.end();
 });
 
-/** A video with a single transcode job (no upload needed for placeholder work). */
+/** A video with a single transcode job (no upload needed: the fake handlers don't read it). */
 async function videoWithJob(): Promise<{ videoId: string; jobId: string }> {
   const videoId = crypto.randomUUID();
   const jobId = await withTransaction(async (tx) => {

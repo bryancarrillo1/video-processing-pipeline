@@ -118,7 +118,15 @@
   overflow: hidden;
   color: rgb(255 255 255 / 92%);
 }
+.thumbImg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .thumbIcon {
+  position: relative;
   width: 42px;
   height: 42px;
   border-radius: 50%;

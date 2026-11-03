@@ -277,9 +277,15 @@ export async function updateProgress(job: JobRow, progress: number): Promise<voi
 /**
  * Marks the job completed — but only if this worker's attempt still owns it.
  * Must run in the same transaction as the job's other result writes, so that
- * either all of them land or none do.
+ * either all of them land or none do. `detail` goes on the timeline event
+ * (what the probe found, what the transcode verified).
  */
-export async function markJobCompleted(tx: Queryable, job: JobRow, workerId: string): Promise<void> {
+export async function markJobCompleted(
+  tx: Queryable,
+  job: JobRow,
+  workerId: string,
+  detail: Record<string, unknown> = {},
+): Promise<void> {
   const res = await tx.query(
     `UPDATE processing_jobs
         SET state = 'completed', progress = 1, finished_at = now(), lease_owner = NULL, lease_expires_at = NULL
@@ -287,7 +293,7 @@ export async function markJobCompleted(tx: Queryable, job: JobRow, workerId: str
     [job.id, job.attempt],
   );
   if (res.rowCount === 0) throw new StaleLeaseError(job.id, job.attempt);
-  await emitEvent(tx, { videoId: job.video_id, jobId: job.id, type: "completed", attempt: job.attempt, workerId });
+  await emitEvent(tx, { videoId: job.video_id, jobId: job.id, type: "completed", attempt: job.attempt, workerId, detail });
 }
 
 export interface FailureInput {

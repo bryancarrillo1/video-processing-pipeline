@@ -4,6 +4,10 @@
       "name": "vpp",
       "credentials": [{ "accessKey": "vpp", "secretKey": "vpp-secret" }],
       "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "anonymous",
+      "actions": ["Read:media", "Read:media-test"]
     }
   ]
 }

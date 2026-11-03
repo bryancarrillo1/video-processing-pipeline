@@ -5,15 +5,15 @@
 //   npm run smoke:ui -- --out /tmp/shots  # elsewhere
 //
 // Covers: login, CORS upload straight to S3, live SSE updates on the pipeline
-// page, the library view and the phone layout. Fails on any console error.
+// page, real thumbnails and verified renditions from the media bucket, the
+// library view and the phone layout. Fails on any console error.
 // (The CI version with assertions arrives in M9.)
 
-import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import { makeClip } from "./clip.ts";
 
 const { values } = parseArgs({
   options: {
@@ -24,9 +24,9 @@ const { values } = parseArgs({
 const out = path.resolve(values.out);
 await mkdir(out, { recursive: true });
 
-// The placeholder workers don't read the bytes, so any file will do until M5.
-const clip = path.join(os.tmpdir(), "vpp-smoke-clip.mp4");
-await writeFile(clip, randomBytes(2 * 1024 * 1024));
+// A real 1080p video (generated, not committed), long enough that the
+// transcodes are visibly running for a few seconds.
+const clip = await makeClip({ width: 1920, height: 1080, seconds: 20 });
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -60,10 +60,17 @@ try {
   await page.waitForFunction(() => document.querySelector("h1 + span")?.textContent === "ready", null, {
     timeout: 90_000,
   });
+  await page.waitForSelector("text=Verified renditions");
+  await page.waitForFunction(() => document.querySelectorAll("a[href$='index.m3u8']").length === 3);
   await shot("5-pipeline-ready", true);
 
   await page.click("text=← Library");
   await page.waitForSelector("text=Your videos");
+  // The probe's thumbnail, loaded anonymously from the public media bucket.
+  await page.waitForFunction(() => {
+    const img = document.querySelector<HTMLImageElement>("a[href^='/videos/'] img");
+    return !!img && img.complete && img.naturalWidth > 0;
+  });
   await page.waitForTimeout(400);
   await shot("6-library");
 

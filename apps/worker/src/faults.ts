@@ -5,6 +5,7 @@ import {
   takeCrashToken,
   type ChaosSettings,
 } from "@vpp/core";
+import { killChildren } from "./media.ts";
 
 /**
  * Thrown only by tests' replacement for runtime.crash. processMessage lets it
@@ -23,6 +24,8 @@ export class SimulatedCrash extends Error {
 export const runtime = {
   crash(reason: string): never {
     console.error(`[worker] CRASH: ${reason}`);
+    // A crashed container takes its ffmpeg children with it; do the same.
+    killChildren();
     process.exit(137);
   },
 };
@@ -33,7 +36,7 @@ export const runtime = {
  * they do nothing.
  */
 export interface Faults {
-  /** Scales simulated work time (slow mode). */
+  /** Slow mode: real encodes are throttled by it (see slowReadRate). */
   readonly slowFactor: number;
   /** Start of a job: where corrupt or unsupported input would be detected. */
   atStart(): void;

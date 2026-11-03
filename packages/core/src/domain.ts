@@ -37,6 +37,8 @@ export interface VideoSummary {
   availableResolutions: number[];
   /** Mean progress of transcode jobs (0–1), or null before any exist. */
   progress: number | null;
+  /** A frame from the source, extracted by the probe; null until then. */
+  thumbnailUrl: string | null;
   createdAt: string;
 }
 
@@ -67,7 +69,32 @@ export interface JobEventView {
   at: string;
 }
 
+/** What the probe found in the uploaded file (null until the probe completes). */
+export interface SourceInfo {
+  width: number;
+  height: number;
+  durationS: number;
+  frameRate: number;
+}
+
+/** A verified, playable output. Only renditions that passed verification exist. */
+export interface RenditionView {
+  /** The rung: 360, 720 or 1080 (the short side, so portrait video fits the same ladder). */
+  height: number;
+  /** Actual encoded size, e.g. 1280×720, or 720×1280 for portrait. */
+  outputWidth: number | null;
+  outputHeight: number | null;
+  /** Peak bits/s over any one segment (HLS BANDWIDTH). */
+  bandwidth: number | null;
+  segmentCount: number | null;
+  /** The rendition's own HLS playlist; the master manifest arrives in M6. */
+  playlistUrl: string;
+  verifiedAt: string;
+}
+
 export interface VideoDetail extends VideoSummary {
+  source: SourceInfo | null;
+  renditions: RenditionView[];
   jobs: JobView[];
   events: JobEventView[];
 }

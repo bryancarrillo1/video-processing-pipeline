@@ -161,7 +161,7 @@
   max-height: 340px;
   width: 100%;
   border-radius: var(--radius);
-  background: #0b0d12;
+  background: #0b0d12 center / cover;
   color: #e8eaef;
   display: flex;
   flex-direction: column;
@@ -226,6 +226,9 @@
   border-style: dashed;
   grid-template-areas: "label waiting waiting";
   background: transparent;
+}
+.laneSkipped {
+  opacity: 0.6;
 }
 .laneLabel {
   grid-area: label;
@@ -406,4 +409,38 @@
   font-size: 0.74rem;
   color: var(--text-faint);
   font-family: var(--mono);
+}
+
+/* Verified renditions */
+.renditions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.renditions li {
+  display: grid;
+  grid-template-columns: 60px 100px 1fr auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.1rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.renditions li:first-child {
+  border-top: none;
+}
+.renditions span {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 560px) {
+  .renditions li {
+    grid-template-columns: 50px 1fr auto;
+  }
+  .renditions li span:nth-of-type(2),
+  .renditions li span:nth-of-type(3) {
+    display: none;
+  }
 }
