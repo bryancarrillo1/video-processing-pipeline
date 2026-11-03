@@ -6,6 +6,7 @@ import {
   emitEvent,
   enqueueJob,
   headObjectSize,
+  masterManifestKey,
   mediaUrl,
   originalKey,
   pool,
@@ -18,6 +19,7 @@ import {
   type JobView,
   type JobKind,
   type JobState,
+  type PlaybackInfo,
   type RenditionView,
   type UploadSessionStatus,
   type VideoDetail,
@@ -212,6 +214,7 @@ interface VideoRow {
   status: VideoStatus;
   created_at: Date;
   thumbnail_key: string | null;
+  manifest_version: number;
   // Aggregated from `renditions`: only verified outputs are ever listed.
   heights: number[];
   progress: number | null;
@@ -219,7 +222,7 @@ interface VideoRow {
 
 // One query for both list and detail views; `$2` optionally narrows to one video.
 const VIDEO_SELECT = `
-  SELECT v.id, v.title, v.status, v.created_at, v.thumbnail_key,
+  SELECT v.id, v.title, v.status, v.created_at, v.thumbnail_key, v.manifest_version,
          coalesce(array_agg(r.height ORDER BY r.height) FILTER (WHERE r.height IS NOT NULL), '{}') AS heights,
          (SELECT avg(j.progress)::float8 FROM processing_jobs j
            WHERE j.video_id = v.id AND j.kind = 'transcode') AS progress
@@ -245,10 +248,14 @@ function toSummary(row: VideoRow): VideoSummary {
   };
 }
 
-async function findVideo(ownerId: string, videoId: string): Promise<VideoSummary> {
+async function findVideoRow(ownerId: string, videoId: string): Promise<VideoRow> {
   const { rows } = await pool.query<VideoRow>(VIDEO_SELECT, [ownerId, videoId]);
   if (!rows[0]) throw new NotFoundError("Video");
-  return toSummary(rows[0]);
+  return rows[0];
+}
+
+async function findVideo(ownerId: string, videoId: string): Promise<VideoSummary> {
+  return toSummary(await findVideoRow(ownerId, videoId));
 }
 
 export async function listVideos(ownerId: string): Promise<VideoSummary[]> {
@@ -261,8 +268,32 @@ export async function getVideoStatus(ownerId: string, videoId: string): Promise<
   return { videoId: id, status, playbackReady, availableResolutions };
 }
 
+/**
+ * Where to play the video from: the CDN URL of its current master manifest.
+ * The manifest and the rendition list come from one row read, and they were
+ * committed together, so the resolutions returned are exactly the ones the
+ * manifest lists. Nothing playable yet → 409 with the current status, so the
+ * client can tell "still processing" from "failed".
+ */
+export async function getPlayback(ownerId: string, videoId: string): Promise<PlaybackInfo> {
+  const row = await findVideoRow(ownerId, videoId);
+  if (row.manifest_version === 0) {
+    throw new AppError(409, "not_playable", `Nothing is playable yet (video is ${row.status})`, {
+      status: row.status,
+    });
+  }
+  return {
+    videoId: row.id,
+    status: row.status,
+    playbackUrl: mediaUrl(masterManifestKey(row.id, row.manifest_version)),
+    manifestVersion: row.manifest_version,
+    availableResolutions: row.heights,
+  };
+}
+
 export async function getVideoDetail(ownerId: string, videoId: string): Promise<VideoDetail> {
-  const summary = await findVideo(ownerId, videoId);
+  const row = await findVideoRow(ownerId, videoId);
+  const summary = toSummary(row);
 
   const { rows: [source] } = await pool.query<{
     width: number | null; height: number | null; duration_s: number | null; frame_rate: number | null;
@@ -300,6 +331,7 @@ export async function getVideoDetail(ownerId: string, videoId: string): Promise<
 
   return {
     ...summary,
+    manifestVersion: row.manifest_version,
     // The probe fills these in; until then we only know what the client claimed.
     source:
       source?.width && source.height && source.duration_s !== null && source.frame_rate !== null

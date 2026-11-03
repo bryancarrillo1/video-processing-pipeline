@@ -1,0 +1,121 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.stage {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #0b0d12;
+}
+.video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 420px;
+  background: #0b0d12;
+}
+
+/* "Upgraded to manifest v3: 1080p added" */
+.toast {
+  position: absolute;
+  top: 0.7rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  background: rgb(22 25 33 / 88%);
+  color: #e8eaef;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: fadeIn 200ms ease-out;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  font-size: 0.82rem;
+}
+
+.quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-muted);
+}
+.quality select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+.statLabel {
+  color: var(--text-muted);
+}
+.statValue {
+  font-weight: 600;
+}
+.statFaint {
+  color: var(--text-faint);
+  font-size: 0.76rem;
+}
+
+.cdn {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 650;
+  padding: 0.05rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background: var(--neutral-soft);
+  color: var(--text-muted);
+}
+.src_HIT {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.src_MISS {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.src_BROWSER {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.manifest {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}
+
+.error {
+  font-size: 0.82rem;
+  color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .manifest {
+    margin-left: 0;
+  }
+}

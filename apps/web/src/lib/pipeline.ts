@@ -193,6 +193,17 @@ export function describeEvent(e: JobEventView, labelFor: (jobId: string) => stri
         tone: "warning",
         note: "It was overdue with no message in flight, so its queue message was presumed lost.",
       };
+    case "manifest_published": {
+      const heights = Array.isArray(d.resolutions) ? (d.resolutions as number[]).map((h) => `${h}p`).join(", ") : "";
+      return {
+        title: `Master manifest v${String(d.version)} published: ${heights}`,
+        tone: "success",
+        note:
+          Number(d.version) > 1
+            ? "A new immutable file; the playback URL now points at it, so players and the CDN pick it up with nothing to invalidate."
+            : "Playable from here on, even while other renditions are still processing.",
+      };
+    }
     case "video_status":
       return { title: `Video ${String(d.from)} → ${String(d.to)}`, tone: d.to === "failed" ? "danger" : d.to === "ready" ? "success" : "neutral" };
     default:

@@ -40,11 +40,20 @@ export function renditionPrefix(videoId: string, height: number, attempt: number
   return `renditions/${videoId}/${height}/a${attempt}/`;
 }
 
+/**
+ * A video's master manifest, version n. Never rewritten: publishing a new set
+ * of renditions writes v{n+1} and moves `videos.manifest_version`. It sits next
+ * to the rendition folders so its variant URIs are short relative paths.
+ */
+export function masterManifestKey(videoId: string, version: number): string {
+  return `renditions/${videoId}/master.v${version}.m3u8`;
+}
+
 export function thumbnailKey(videoId: string, attempt: number): string {
   return `thumbnails/${videoId}/a${attempt}.jpg`;
 }
 
-/** Browser-facing URL for an object in the media bucket (the CDN from M6 on). */
+/** Browser-facing URL for an object in the media bucket, served through the CDN. */
 export function mediaUrl(key: string): string {
   return `${config.MEDIA_PUBLIC_URL}/${key}`;
 }
@@ -103,6 +112,19 @@ export async function uploadMediaFile(key: string, fromPath: string, contentType
   return size;
 }
 
+/** Writes a small in-memory object (a manifest) to the public media bucket. */
+export async function putMediaObject(key: string, body: string, contentType: string): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.MEDIA_BUCKET,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      CacheControl: IMMUTABLE,
+    }),
+  );
+}
+
 /** Every object under `prefix` in the media bucket, as key → size. */
 export async function listMediaObjects(prefix: string): Promise<Map<string, number>> {
   const objects = new Map<string, number>();
@@ -135,8 +157,8 @@ async function ensureBucket(bucket: string): Promise<void> {
   }
   // The browser uploads straight to storage from another origin (the UI), so
   // storage itself must allow that origin. The API is never in the byte path.
-  // The media bucket needs the same rule for GETs once the player (M6) fetches
-  // playlists and segments with XHR.
+  // Browsers read the media bucket through the CDN, which answers CORS itself
+  // (infra/nginx-cdn.conf); the rule here only matters for direct access.
   await s3.send(
     new PutBucketCorsCommand({
       Bucket: bucket,

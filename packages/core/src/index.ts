@@ -7,3 +7,4 @@ export * from "./queue.ts";
 export * from "./jobs.ts";
 export * from "./chaos.ts";
 export * from "./workers.ts";
+export * from "./manifests.ts";

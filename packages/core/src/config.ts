@@ -14,8 +14,9 @@ const ConfigSchema = z.object({
   S3_BUCKET: z.string().default("videos"),
   // Public-read outputs: renditions, playlists, thumbnails.
   MEDIA_BUCKET: z.string().default("media"),
-  // Base URL the *browser* uses for media. Defaults to the bucket on the S3
-  // endpoint; M6 points it at the CDN instead.
+  // The CDN (nginx proxy_cache in front of storage; docker-compose `cdn`).
+  CDN_URL: z.url().default("http://localhost:8081"),
+  // Base URL the *browser* uses for media: the media bucket, through the CDN.
   MEDIA_PUBLIC_URL: z.url().optional(),
   API_PORT: z.coerce.number().int().default(3000),
   UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
@@ -57,7 +58,7 @@ const ConfigSchema = z.object({
 })
   // Fill in defaults that depend on other settings. `transform` changes the
   // parsed (output) type too, so MEDIA_PUBLIC_URL is a plain string from here on.
-  .transform((c) => ({ ...c, MEDIA_PUBLIC_URL: c.MEDIA_PUBLIC_URL ?? `${c.S3_ENDPOINT}/${c.MEDIA_BUCKET}` }));
+  .transform((c) => ({ ...c, MEDIA_PUBLIC_URL: c.MEDIA_PUBLIC_URL ?? `${c.CDN_URL}/${c.MEDIA_BUCKET}` }));
 
 export type Config = z.infer<typeof ConfigSchema>;
 

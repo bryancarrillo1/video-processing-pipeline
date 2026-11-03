@@ -7,6 +7,7 @@ import {
   listMediaObjects,
   markJobCompleted,
   pool,
+  publishManifest,
   recomputeVideoStatus,
   renditionPrefix,
   thumbnailKey,
@@ -82,8 +83,9 @@ const probe: JobHandler = async ({ job, workerId, signal, faults }) => {
 
 /**
  * Encodes one HLS rendition, verifies it, publishes it to the media bucket,
- * checks what storage actually holds, and only then records the rendition.
- * A `renditions` row therefore always means "complete, verified, playable".
+ * checks what storage actually holds, and only then records the rendition and
+ * publishes a master manifest that lists it. A `renditions` row therefore
+ * always means "complete, verified, playable", and so does a manifest entry.
  */
 const transcode: JobHandler = async ({ job, workerId, signal, faults }) => {
   faults.atStart();
@@ -138,6 +140,9 @@ const transcode: JobHandler = async ({ job, workerId, signal, faults }) => {
          ON CONFLICT (video_id, height) DO NOTHING`,
         [job.video_id, job.target_height, output.width, output.height, output.bandwidth, output.segmentCount, prefix],
       );
+      // Advertise it: a new immutable master manifest that includes this
+      // rendition, and the pointer moved to it, in this same transaction.
+      await publishManifest(tx, job.video_id);
       await recomputeVideoStatus(tx, job.video_id);
     });
   });

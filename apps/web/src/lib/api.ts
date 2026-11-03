@@ -1,6 +1,7 @@
 import type {
   ChaosSettings,
   CreateVideoResponse,
+  PlaybackInfo,
   SystemView,
   VideoDetail,
   VideoStatus,
@@ -52,6 +53,8 @@ export const api = {
 
   listVideos: () => request<{ videos: VideoSummary[] }>("/videos").then((r) => r.videos),
   getVideo: (videoId: string) => request<VideoDetail>(`/videos/${videoId}`),
+  /** 409 `not_playable` until the first rendition is published. */
+  getPlayback: (videoId: string) => request<PlaybackInfo>(`/videos/${videoId}/playback`),
 
   createVideo: (input: CreateVideoInput, idempotencyKey: string) =>
     request<CreateVideoResponse>("/videos", {

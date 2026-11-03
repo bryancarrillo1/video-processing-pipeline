@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import type { VideoDetail } from "@vpp/core";
+import type { PlaybackInfo, VideoDetail } from "@vpp/core";
 
 // End to end with real media: API → storage → dispatcher → worker (ffprobe,
 // ffmpeg) → media bucket → API. A low duration limit lets one test exercise
@@ -47,16 +47,28 @@ async function upload(bytes: Uint8Array<ArrayBuffer>, title = "Media test"): Pro
 const detail = async (videoId: string): Promise<VideoDetail> =>
   (await app.inject({ url: `/videos/${videoId}`, headers })).json();
 
-/** Runs dispatcher + one worker until the video settles (ready or failed). */
-async function processVideo(videoId: string, timeoutMs = 60_000): Promise<VideoDetail> {
+const playback = (videoId: string) => app.inject({ url: `/videos/${videoId}/playback`, headers });
+
+/** Runs dispatcher + one worker (one job at a time) until `done` holds for the video. */
+async function pumpUntil(videoId: string, done: (d: VideoDetail) => boolean, timeoutMs = 60_000): Promise<VideoDetail> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const d = await detail(videoId);
-    if (d.status === "ready" || d.status === "failed") return d;
+    if (done(d)) return d;
     if (Date.now() > deadline) throw new Error(`video stuck in ${d.status}`);
     await dispatchOnce();
     await pollOnce("media-worker", never, { waitSeconds: 1, log: quiet });
   }
+}
+
+/** Runs until the video settles (ready or failed). */
+const processVideo = (videoId: string) => pumpUntil(videoId, (d) => d.status === "ready" || d.status === "failed");
+
+/** A GET through the CDN, returning the body and whether the edge already had it. */
+async function viaCdn(url: string): Promise<{ text: string; cache: string | null; type: string | null }> {
+  const res = await fetch(url);
+  expect(res.ok).toBe(true);
+  return { text: await res.text(), cache: res.headers.get("x-cache-status"), type: res.headers.get("content-type") };
 }
 
 describe("real media pipeline", () => {
@@ -95,7 +107,60 @@ describe("real media pipeline", () => {
     // The timeline says what the probe found.
     const probeDone = d.events.find((e) => e.type === "completed" && e.jobId === d.jobs[0]!.jobId);
     expect(probeDone?.detail).toMatchObject({ width: 1920, height: 1080, renditions: [360, 720, 1080] });
+
+    // Playback: one manifest version per published rendition, the last listing all three.
+    expect(d.manifestVersion).toBe(3);
+    const res = await playback(videoId);
+    expect(res.statusCode).toBe(200);
+    const info: PlaybackInfo = res.json();
+    expect(info).toMatchObject({ status: "ready", manifestVersion: 3, availableResolutions: [360, 720, 1080] });
+    expect(info.playbackUrl).toBe(`${process.env.CDN_URL ?? "http://localhost:8081"}/media-test/renditions/${videoId}/master.v3.m3u8`);
+
+    // The CDN fetches from storage once, then serves its own copy.
+    const first = await viaCdn(info.playbackUrl);
+    expect(first.cache).toBe("MISS");
+    expect(first.type).toBe("application/vnd.apple.mpegurl");
+    expect((await viaCdn(info.playbackUrl)).cache).toBe("HIT");
+
+    // Every variant the master lists resolves (relative to the master) to a
+    // verified rendition, with the BANDWIDTH and RESOLUTION it recorded.
+    const variants = [...first.text.matchAll(/#EXT-X-STREAM-INF:BANDWIDTH=(\d+),RESOLUTION=(\d+x\d+).*\n(.+)/g)];
+    expect(variants.map((m) => [Number(m[1]), m[2]])).toEqual(
+      d.renditions.map((r) => [r.bandwidth, `${r.outputWidth}x${r.outputHeight}`]),
+    );
+    for (const [i, m] of variants.entries()) {
+      expect(new URL(m[3]!, info.playbackUrl).href).toBe(d.renditions[i]!.playlistUrl);
+    }
+
+    // Earlier versions stay exactly as published: immutable, so safe to cache forever.
+    const v1 = await viaCdn(info.playbackUrl.replace("master.v3", "master.v1"));
+    expect(v1.text.match(/#EXT-X-STREAM-INF/g)).toHaveLength(1);
+    const published = d.events.filter((e) => e.type === "manifest_published").map((e) => e.detail).reverse();
+    expect(published.map((p) => p["version"])).toEqual([1, 2, 3]);
+    expect(published[2]).toMatchObject({ resolutions: [360, 720, 1080] });
   }, 90_000);
+
+  it("is playable at the first verified rendition while the others are still processing", async () => {
+    const videoId = await upload(await readFile(await makeClip({ width: 1280, height: 720, seconds: 2 })));
+    // Nothing playable yet: 409 with the current status, not a dead URL.
+    const early = await playback(videoId);
+    expect(early.statusCode).toBe(409);
+    expect(early.json()).toMatchObject({ error: "not_playable", status: "queued" });
+
+    // One job per pump: stop as soon as the first transcode has been published.
+    const d = await pumpUntil(videoId, (v) => v.manifestVersion > 0);
+    expect(d.status).toBe("processing");
+    const info: PlaybackInfo = (await playback(videoId)).json();
+    expect(info).toMatchObject({ status: "processing", manifestVersion: 1 });
+    expect(info.availableResolutions).toHaveLength(1);
+    const master = (await viaCdn(info.playbackUrl)).text;
+    expect(master.match(/#EXT-X-STREAM-INF/g)).toHaveLength(1);
+
+    // The second rendition publishes v2; the v1 URL a player already holds keeps working.
+    const done = await processVideo(videoId);
+    expect(done).toMatchObject({ status: "ready", manifestVersion: 2 });
+    expect((await viaCdn(info.playbackUrl)).text).toBe(master);
+  });
 
   it("never upscales: a 720p source gets 360p and 720p only", async () => {
     const videoId = await upload(await readFile(await makeClip({ width: 1280, height: 720, seconds: 2 })));
@@ -122,6 +187,7 @@ describe("real media pipeline", () => {
     expect(d.jobs[0]!.lastError).toMatch(/Not a readable video file/);
     expect(d.thumbnailUrl).toBeNull();
     expect(d.events.map((e) => e.type)).toContain("dead_lettered");
+    expect((await playback(videoId)).json()).toMatchObject({ error: "not_playable", status: "failed" });
   });
 
   it("rejects a video over the duration limit without retrying", async () => {

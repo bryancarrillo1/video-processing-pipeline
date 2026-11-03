@@ -1,7 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { config } from "@vpp/core";
-import { completeUpload, createVideo, getVideoDetail, getVideoStatus, listVideos } from "../videos.service.ts";
+import {
+  completeUpload,
+  createVideo,
+  getPlayback,
+  getVideoDetail,
+  getVideoStatus,
+  listVideos,
+} from "../videos.service.ts";
 
 // zod schemas validate untrusted input at runtime AND give us static types.
 const CreateVideoBody = z.object({
@@ -39,5 +46,10 @@ export async function videoRoutes(app: FastifyInstance): Promise<void> {
   app.get("/videos/:videoId/status", async (req) => {
     const { videoId } = VideoParams.parse(req.params);
     return getVideoStatus(req.userId, videoId);
+  });
+
+  app.get("/videos/:videoId/playback", async (req) => {
+    const { videoId } = VideoParams.parse(req.params);
+    return getPlayback(req.userId, videoId);
   });
 }

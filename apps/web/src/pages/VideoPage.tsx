@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import type { JobEventView, JobView, RenditionView, VideoDetail } from "@vpp/core/domain";
 import { api, ApiError } from "../lib/api.ts";
@@ -17,6 +17,9 @@ import {
 import { useLiveQuery, useNow } from "../hooks/useLiveQuery.ts";
 import { JobStateBadge, ProgressBar, ResolutionChips, Spinner, StatusBadge, cx } from "../components/ui.tsx";
 import styles from "./VideoPage.module.css";
+
+// Code-split: hls.js is a few hundred KB and only this page needs it.
+const Player = lazy(() => import("../components/Player.tsx"));
 
 export function VideoPage() {
   const { videoId = "" } = useParams();
@@ -84,7 +87,13 @@ function VideoView({ video }: { video: VideoDetail }) {
 
       <div className={styles.columns}>
         <div className={styles.mainCol}>
-          <PlayerPlaceholder video={video} />
+          {video.manifestVersion > 0 ? (
+            <Suspense fallback={<PlayerPlaceholder video={video} />}>
+              <Player videoId={video.videoId} manifestVersion={video.manifestVersion} poster={video.thumbnailUrl} />
+            </Suspense>
+          ) : (
+            <PlayerPlaceholder video={video} />
+          )}
 
           {video.renditions.length > 0 && <Renditions renditions={video.renditions} />}
 
@@ -128,25 +137,16 @@ function Stepper({ steps }: { steps: Step[] }) {
   );
 }
 
+/** Shown until a master manifest exists (and while the player chunk loads). */
 function PlayerPlaceholder({ video }: { video: VideoDetail }) {
-  const best = video.availableResolutions.at(-1);
   // The probe's thumbnail doubles as the poster frame, dimmed behind the text.
   const poster = video.thumbnailUrl
     ? { backgroundImage: `linear-gradient(rgb(11 13 18 / 72%), rgb(11 13 18 / 72%)), url(${video.thumbnailUrl})` }
     : undefined;
   return (
     <div className={styles.player} style={poster}>
-      {video.playbackReady ? (
-        <>
-          <div className={styles.playerIcon}>▶</div>
-          <div className={styles.playerTitle}>Playable at {best}p</div>
-          <div className={styles.playerNote}>
-            {video.status === "ready"
-              ? "All renditions are done."
-              : "Higher resolutions are still processing; playback doesn't wait for them."}{" "}
-            The HLS player (with a master manifest across renditions) arrives in M6.
-          </div>
-        </>
+      {video.manifestVersion > 0 ? (
+        <Spinner />
       ) : video.status === "failed" ? (
         <div className={styles.playerTitle}>Processing failed: nothing playable</div>
       ) : (

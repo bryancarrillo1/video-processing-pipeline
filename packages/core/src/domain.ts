@@ -87,16 +87,36 @@ export interface RenditionView {
   /** Peak bits/s over any one segment (HLS BANDWIDTH). */
   bandwidth: number | null;
   segmentCount: number | null;
-  /** The rendition's own HLS playlist; the master manifest arrives in M6. */
+  /** The rendition's own HLS playlist (the master manifest lists all of them). */
   playlistUrl: string;
   verifiedAt: string;
 }
 
 export interface VideoDetail extends VideoSummary {
   source: SourceInfo | null;
+  /**
+   * Current master manifest version (0 = none yet). It bumps each time a
+   * rendition is published; the player refetches /playback when it changes.
+   */
+  manifestVersion: number;
   renditions: RenditionView[];
   jobs: JobView[];
   events: JobEventView[];
+}
+
+/**
+ * GET /videos/:id/playback. The API hands out the URL; the CDN delivers the
+ * bytes (PROJECT_OVERVIEW: "The API returns playback information; the CDN
+ * delivers the video content").
+ */
+export interface PlaybackInfo {
+  videoId: string;
+  status: VideoStatus;
+  /** CDN URL of the current, immutable master manifest (master.v{n}.m3u8). */
+  playbackUrl: string;
+  manifestVersion: number;
+  /** Exactly the renditions that manifest lists. */
+  availableResolutions: number[];
 }
 
 /** Fault-injection settings (one global row), editable from the System page. */

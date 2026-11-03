@@ -47,7 +47,7 @@ Key choices:
 | M3 | React UI v1: login, library, upload, live pipeline view | ✅ |
 | M4 | Retries with backoff + jitter, error classification, DLQ, reconciler, chaos controls | ✅ |
 | M5 | Real media: ffprobe validation, thumbnails, ffmpeg HLS, progress, verify-before-publish | ✅ |
-| M6 | Playback: versioned manifests, CDN cache, playback API, hls.js player | |
+| M6 | Playback: versioned manifests, CDN cache, playback API, hls.js player | ✅ |
 | M7 | Resumable multipart upload in the browser | |
 | M8 | Metrics panel + structured logging | |
 | M9 | Docker packaging, CI, Playwright smoke, docs, hosted deploy | |
@@ -130,11 +130,32 @@ No new components: workers read the original from Blob Storage and write outputs
 - **Deferred to M9:** the worker Docker image (`node:24-bookworm-slim` + ffmpeg). Locally the worker uses ffmpeg from `PATH` (`FFMPEG_PATH` / `FFPROBE_PATH` override it), and `npm run dev` checks for it up front.
 - The portrait test found a modeling bug before it shipped: `renditions.height` is the rung's name (the short side), so a portrait rendition lost its real pixel height. The fix stores `output_width`/`output_height` separately. `npm run smoke:ui` and `npm run demo:chaos` both pass with real encodes, including a worker killed mid-encode and a crash after publishing but before the DB commit.
 
-### M6: Playback and CDN
-- Each rendition completion writes an immutable `master.v{n}.m3u8`, then swaps `videos.manifest_version` under the video row lock.
-- nginx `proxy_cache` sits in front of the `media` bucket and exposes `X-Cache-Status`.
-- `GET /videos/:id/playback` returns the playback URL, or 409 with the status when nothing is playable yet.
-- The hls.js player has a quality menu, a bandwidth readout and a CDN HIT/MISS badge. It upgrades when a new manifest version arrives.
+### M6: Playback and CDN ✅
+This completes the "Watch" path in `PROJECT_OVERVIEW.md`: Client → CDN → Blob Storage, with the API only saying where to play from. The CDN was already a component in that diagram; nginx stands in for it.
+
+- **Versioned manifests** (`packages/core/src/manifests.ts`): the transaction that records a rendition also writes a brand-new `renditions/{videoId}/master.v{n+1}.m3u8` and moves `videos.manifest_version` (migration 005) to it, under the video row lock (`FOR NO KEY UPDATE`).
+  - The file is uploaded before the pointer commits, so the pointer never references a missing object. A rolled-back upload is an orphan nobody was pointed at.
+  - Variants list the stored peak `BANDWIDTH`, the real `RESOLUTION` and the `FRAME-RATE`, with URIs relative to the master. `EXT-X-INDEPENDENT-SEGMENTS` holds because of M5's fixed GOP.
+  - A `manifest_published` event goes on the timeline. `npm run setup` backfills manifests for videos processed before M6.
+- **CDN** (`cdn` in docker-compose, `infra/nginx-cdn.conf`): nginx `proxy_cache` in front of storage on `:8081`.
+  - It honors storage's `immutable, max-age=1y`, so nothing is ever invalidated.
+  - `proxy_cache_lock` collapses simultaneous misses into one origin fetch, and `use_stale` keeps serving during a storage outage.
+  - It is read-only and fetches anonymously, so it can only serve the public media bucket. Originals return 403.
+  - It answers CORS itself and sends `X-Cache-Status` and `Timing-Allow-Origin`.
+  - `MEDIA_PUBLIC_URL` now defaults to `${CDN_URL}/${MEDIA_BUCKET}`, so thumbnails and the tests go through it too.
+- **API:** `GET /videos/:id/playback` returns `{ playbackUrl, manifestVersion, availableResolutions, status }`, or `409 not_playable` with the status. `VideoDetail` gains `manifestVersion`.
+- **Player** (`apps/web/src/components/Player.tsx`, hls.js light build, lazy-loaded with the video page):
+  - A quality menu (Auto plus each rung) and the current level.
+  - The bandwidth estimate.
+  - Where each segment came from: CDN HIT, MISS, or the browser's own cache.
+  - When the detail's `manifestVersion` bumps over SSE, it refetches `/playback`, reloads at the same position, keeps playing and keeps a pinned quality.
+- **Tests:**
+  - The manifest builder.
+  - A deterministic race between two publishing transactions, which fails without the lock.
+  - End to end: 409 before playable; manifest v1 with one rendition while the video is still `processing`; v3 through the CDN, MISS then HIT, every variant resolving to its verified rendition; old versions unchanged.
+- **Browser verification:** `npm run smoke:ui` now plays the video. Its first run found a real bug: React runs the previous effect's cleanup (`hls.destroy()`, which resets the `<video>`) before the next effect reads the position, so every manifest upgrade restarted playback at 0. The old player's cleanup now saves the position.
+  - The next run showed that a reload's "MISS" badges came from the **browser** cache replaying the first response's header. That led to the three-way segment source.
+  - `npm run demo:chaos` still passes all five scenarios. After it, every video's current manifest matches its recorded renditions exactly, including retried `a2/` and `a3/` outputs, and never an orphan.
 
 ### M7: Resumable multipart upload
 - Every upload is a multipart upload with 8 MiB parts.
